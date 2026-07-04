@@ -1,0 +1,84 @@
+name: Test ACME Conflicts
+
+on: [push]
+
+jobs:
+  test-kconfig:
+    name: Check Kconfig recursion
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout openwrt main
+        uses: actions/checkout@v7
+        with:
+          repository: openwrt/openwrt
+          path: openwrt
+          fetch-depth: 1
+
+      - name: Checkout upstream packages master (baseline)
+        uses: actions/checkout@v7
+        with:
+          repository: openwrt/packages
+          ref: master
+          path: packages-baseline
+          fetch-depth: 1
+
+      - name: Checkout PR packages
+        uses: actions/checkout@v7
+        with:
+          path: packages
+          fetch-depth: 1
+
+      - name: Get baseline recursion errors
+        working-directory: openwrt
+        run: |
+          # Remove ALL existing "packages" feed entries (src-git, src-git-full, src-link)
+          sed -i '/^src-git\(-full\)\? packages/d' feeds.conf.default
+          echo "src-link packages $GITHUB_WORKSPACE/packages-baseline" >> feeds.conf.default
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          echo "CONFIG_ALL=y" >> .config
+          echo "CONFIG_TARGET_x86_64=y" >> .config
+          make defconfig 2>&1 | grep "recursive dependency" | sort > /tmp/baseline
+
+      - name: Test for new recursion
+        working-directory: openwrt
+        run: |
+          # Remove ALL existing "packages" feed entries before adding the PR version
+          sed -i '/^src-git\(-full\)\? packages/d; /^src-link packages/d' feeds.conf.default
+          echo "src-link packages $GITHUB_WORKSPACE/packages" >> feeds.conf.default
+          ./scripts/feeds update -a
+          ./scripts/feeds install -f -a
+          # Force rescan of package metadata; the cached tmp/.packageinfo
+          # from the baseline step is stale even though the symlinks changed.
+          rm -rf tmp/info tmp/.packageinfo tmp/.config-package.in
+          make defconfig 2>&1 | grep "recursive dependency" | sort > /tmp/new
+          if ! diff /tmp/baseline /tmp/new; then
+            echo "FAIL: new recursive dependencies introduced"
+            diff /tmp/baseline /tmp/new
+            exit 1
+          fi
+          echo "PASS: no new recursive dependencies"
+
+      - name: Check auto-generator readiness
+        working-directory: openwrt
+        run: |
+          # Check if acme-acmesh has Default-Variant in metadata.
+          # If missing, the auto-generator (add_implicit_provides_conflicts)
+          # won't fire because variant_default is not set.
+          # This is a diagnostic, not a gate.
+          if awk '/^Package: acme-acmesh$/,/^Package: acme-acmesh-dnsapi/' tmp/.packageinfo | \
+             grep -q "^Default-Variant:"; then
+            echo "PASS: acme-acmesh has Default-Variant in metadata"
+          else
+            echo "WARN: acme-acmesh missing Default-Variant in metadata"
+          fi
+
+      - name: Verify Kconfig conflict constraint
+        working-directory: openwrt
+        run: |
+          if grep -q "depends on m || (PACKAGE_uacme != y)" tmp/.config-package.in; then
+            echo "PASS: Kconfig conflict constraint generated"
+          else
+            echo "FAIL: constraint missing from Config.in"
+            exit 1
+          fi
