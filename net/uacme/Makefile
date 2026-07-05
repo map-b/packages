@@ -51,6 +51,7 @@ define Package/uacme
   CONFLICTS:=acme-acmesh
   Menu:=1
   PROVIDES:=@acme
+  DEFAULT_VARIANT:=1
 endef
 
 define Package/uacme-ualpn

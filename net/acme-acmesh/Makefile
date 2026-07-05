@@ -30,7 +30,6 @@ define Package/acme-acmesh
   URL:=https://acme.sh
   PKGARCH:=all
   PROVIDES:=@acme
-  DEFAULT_VARIANT:=1
 endef
 
 define Package/acme-acmesh/description
