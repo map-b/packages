@@ -1,17 +1,10 @@
 name: Test Kconfig recursion detection
 
-on:
-  push:
-  workflow_dispatch:
-    inputs:
-      baseline_ref:
-        description: map-b/packages baseline branch/commit to compare against
-        required: false
-        type: string
+on: [push]
 
 jobs:
   test-kconfig:
-    name: PROVIDES select + CONFLICTS
+    name: Defconfig recursion check
     runs-on: ubuntu-latest
     steps:
       - name: Checkout openwrt main
@@ -21,146 +14,25 @@ jobs:
           path: openwrt
           fetch-depth: 1
 
-      - name: Checkout baseline (map-b/packages)
-        uses: actions/checkout@v7
-        with:
-          repository: map-b/packages
-          ref: ${{ inputs.baseline_ref || 'test-conflicts-fail' }}
-          path: packages-baseline
-          fetch-depth: 1
-
       - name: Checkout PR branch packages
         uses: actions/checkout@v7
         with:
           path: packages
           fetch-depth: 1
 
-      - name: Get baseline recursion errors
+      - name: Run make defconfig (full log)
         working-directory: openwrt
         run: |
           sed -i '/^src-git\(-full\)\? packages/d' feeds.conf.default
-          echo "src-link packages $GITHUB_WORKSPACE/packages-baseline" >> feeds.conf.default
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-          echo "CONFIG_ALL=y" >> .config
-          echo "CONFIG_TARGET_x86_64=y" >> .config
-          make defconfig 2>&1 | grep "recursive dependency" | sort > /tmp/baseline
-          echo "=== Baseline recursion lines ==="
-          cat /tmp/baseline || echo "(none)"
-
-      - name: Test for new recursion
-        working-directory: openwrt
-        run: |
-          sed -i '/^src-git\(-full\)\? packages/d; /^src-link packages/d' feeds.conf.default
           echo "src-link packages $GITHUB_WORKSPACE/packages" >> feeds.conf.default
           ./scripts/feeds update -a
           ./scripts/feeds install -f -a
           rm -rf tmp/info tmp/.packageinfo tmp/.config-package.in
-          make defconfig 2>&1 | grep "recursive dependency" | sort > /tmp/new
-          echo "=== PR recursion lines ==="
-          cat /tmp/new || echo "(none)"
-          if ! diff /tmp/baseline /tmp/new; then
-            echo "FAIL: new recursive dependencies introduced"
-            diff /tmp/baseline /tmp/new
+          echo "CONFIG_ALL=y" >> .config
+          echo "CONFIG_TARGET_x86_64=y" >> .config
+          make defconfig 2>&1 | tee /tmp/defconfig.log
+          if grep -q "recursive dependency" /tmp/defconfig.log; then
+            echo "RESULT: recursive dependency detected"
             exit 1
           fi
-          echo "PASS: no new recursive dependencies"
-
-      - name: Dump librespeed Kconfig
-        working-directory: openwrt
-        run: |
-          for s in librespeed-cli librespeed-cli-rust librespeed-common; do
-            echo "=== $s Kconfig ==="
-            awk "/^config PACKAGE_$s\$/,/^\$/" tmp/.config-package.in || echo "(not found)"
-            echo ""
-          done
-          echo "=== librespeed select/depends lines ==="
-          grep -E "select PACKAGE_librespeed|depends on .*PACKAGE_librespeed" tmp/.config-package.in || echo "(none)"
-
-      - name: Dump uacme generated Kconfig
-        working-directory: openwrt
-        run: |
-          echo "=== uacme Kconfig section ==="
-          awk '/^config PACKAGE_uacme$/,/^$/' tmp/.config-package.in
-          echo ""
-          echo "=== Select resolution for uacme ==="
-          grep "select PACKAGE_" tmp/.config-package.in | grep -i uacme || echo "(none)"
-
-      - name: Show all CONFLICTS + PROVIDES-select lines
-        working-directory: openwrt
-        run: |
-          echo "=== All CONFLICTS constraints ==="
-          grep "depends on m || (PACKAGE_" tmp/.config-package.in || echo "(none)"
-          echo ""
-          echo "=== All PROVIDES select lines ==="
-          grep "select PACKAGE_.* if PACKAGE_" tmp/.config-package.in || echo "(none)"
-
-      - name: Auto-generator readiness (general)
-        working-directory: openwrt
-        run: |
-          echo "=== Virtual packages with multiple providers ==="
-          awk '
-            /^Package: / { pkg = $2; dv[pkg] = 0 }
-            /^Default-Variant: / { dv[pkg] = 1 }
-            /^Provides: / {
-              for (i=2; i<=NF; i++) {
-                v = $i; sub(/^@/,"",v)
-                if (v != pkg) {
-                  providers[v] = providers[v] ? providers[v] " " pkg : pkg
-                  counts[v]++
-                }
-              }
-            }
-            END {
-              for (v in counts) if (counts[v] > 1)
-                printf "%-30s %d providers: %s\n", v, counts[v], providers[v]
-            }
-          ' tmp/.packageinfo
-
-          echo ""
-          echo "=== Auto-generator status per virtual package ==="
-          awk '
-            /^Package: / { pkg = $2; dv[pkg] = 0 }
-            /^Default-Variant: / { dv[pkg] = 1 }
-            /^Provides: / {
-              for (i=2; i<=NF; i++) {
-                v = $i; sub(/^@/,"",v)
-                if (v != pkg) {
-                  providers[v] = providers[v] ? providers[v] " " pkg : pkg
-                  counts[v]++
-                }
-              }
-            }
-            END {
-              for (v in counts) if (counts[v] > 1) {
-                split(providers[v], pkgs, " ")
-                has_dv = 0; missing = ""
-                for (j in pkgs) {
-                  if (dv[pkgs[j]]) has_dv++; else missing = missing " " pkgs[j]
-                }
-                if (has_dv > 0)
-                  printf "%-30s FIRES  (default variant on %d/%d providers)\n", v, has_dv, counts[v]
-                else
-                  printf "%-30s SKIPS  (no Default-Variant on any provider)\n", v
-              }
-            }
-          ' tmp/.packageinfo
-
-          echo ""
-          echo "=== Manual CONFLICTS declared ==="
-          awk '
-            /^Package: / { pkg = $2 }
-            /^Conflicts: / {
-              split($0, parts, "Conflicts: ")
-              print pkg " -> " parts[2]
-            }
-          ' tmp/.packageinfo
-
-      - name: Dump v2ray-geodata provider Kconfig
-        working-directory: openwrt
-        run: |
-          echo "=== v2ray-geoip Kconfig ==="
-          awk '/^config PACKAGE_v2ray-geoip$/,/^$/' tmp/.config-package.in || echo "(not found)"
-          echo ""
-          echo "=== v2ray-geosite Kconfig ==="
-          awk '/^config PACKAGE_v2ray-geosite$/,/^$/' tmp/.config-package.in || echo "(not found)"
+          echo "RESULT: no recursion"
