@@ -44,6 +44,8 @@ define Package/librespeed-cli
   TITLE:=Command line client for LibreSpeed
   URL:=https://github.com/librespeed/speedtest-cli
   DEPENDS:=$(GO_ARCH_DEPENDS)
+  VARIANT:=default
+  DEFAULT_VARIANT:=1
 endef
 
 define Package/librespeed-cli/description
