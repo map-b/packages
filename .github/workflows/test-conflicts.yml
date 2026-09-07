@@ -1,6 +1,13 @@
-name: Test PROVIDES-select target
+name: Test Kconfig recursion detection
 
-on: [push]
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      baseline_ref:
+        description: map-b/packages baseline branch/commit to compare against
+        required: false
+        type: string
 
 jobs:
   test-kconfig:
@@ -14,11 +21,11 @@ jobs:
           path: openwrt
           fetch-depth: 1
 
-      - name: Checkout upstream master (baseline)
+      - name: Checkout baseline (map-b/packages)
         uses: actions/checkout@v7
         with:
-          repository: openwrt/packages
-          ref: master
+          repository: map-b/packages
+          ref: ${{ inputs.baseline_ref || 'test-conflicts-fail' }}
           path: packages-baseline
           fetch-depth: 1
 
@@ -58,6 +65,17 @@ jobs:
             exit 1
           fi
           echo "PASS: no new recursive dependencies"
+
+      - name: Dump librespeed Kconfig
+        working-directory: openwrt
+        run: |
+          for s in librespeed-cli librespeed-cli-rust librespeed-common; do
+            echo "=== $s Kconfig ==="
+            awk "/^config PACKAGE_$s\$/,/^\$/" tmp/.config-package.in || echo "(not found)"
+            echo ""
+          done
+          echo "=== librespeed select/depends lines ==="
+          grep -E "select PACKAGE_librespeed|depends on .*PACKAGE_librespeed" tmp/.config-package.in || echo "(none)"
 
       - name: Dump uacme generated Kconfig
         working-directory: openwrt
