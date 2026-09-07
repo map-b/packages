@@ -33,7 +33,7 @@ define Package/librespeed-cli-rust
   URL:=https://github.com/BKPepe/speedtest-cli-rust
   DEPENDS:=$(RUST_ARCH_DEPENDS) +libopenssl
   PROVIDES:=librespeed-cli
-  CONFLICTS:=librespeed-cli
+  VARIANT:=rust
 endef
 
 define Package/librespeed-cli-rust/description
