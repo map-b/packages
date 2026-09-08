@@ -42,6 +42,12 @@ jobs:
           echo "CONFIG_ALL=y" >> .config
           echo "CONFIG_TARGET_x86_64=y" >> .config
           make defconfig 2>&1 | tee /tmp/defconfig.log
+          echo "=== librespeed-common block ==="
+          rg -N -A 14 '^config PACKAGE_librespeed-common' tmp/.config-package.in || true
+          echo "=== librespeed-cli block ==="
+          rg -N -A 10 '^config PACKAGE_librespeed-cli$' tmp/.config-package.in || true
+          echo "=== librespeed-cli-rust block ==="
+          rg -N -A 10 '^config PACKAGE_librespeed-cli-rust' tmp/.config-package.in || true
           if grep -q "recursive dependency" /tmp/defconfig.log; then
             echo "RESULT: recursive dependency detected"
             exit 1
