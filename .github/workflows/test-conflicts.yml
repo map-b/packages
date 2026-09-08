@@ -20,6 +20,17 @@ jobs:
           path: packages
           fetch-depth: 1
 
+      - name: Apply generator fix if the branch carries the patch
+        working-directory: openwrt
+        run: |
+          PATCH="$GITHUB_WORKSPACE/.github/patches/pkgmeta-archfix.patch"
+          if [ -f "$PATCH" ]; then
+            git apply "$PATCH"
+            echo "RESULT: applied pkgmeta-archfix.patch"
+          else
+            echo "RESULT: no fix patch (baseline)"
+          fi
+
       - name: Run make defconfig (full log)
         working-directory: openwrt
         run: |

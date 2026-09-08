@@ -1,0 +1,24 @@
+diff --git a/scripts/package-metadata.pl b/scripts/package-metadata.pl
+index b1fb280be5..72f8a83bbf 100755
+--- a/scripts/package-metadata.pl
++++ b/scripts/package-metadata.pl
+@@ -209,7 +209,18 @@ sub mconf_depends {
+ 			# thus if FOO depends on other config options, these dependencies
+ 			# will not be checked. To fix this, we simply emit all of FOO's
+ 			# depends here as well.
+-			$package{$depend} and push @t_depends, [ $package{$depend}->{depends}, $condition ];
++			#
++			# Bare '@(arch)' deps are pure arch constraints, not package symbols,
++			# and can never be part of a cycle. Do not fold the provider-selection
++			# rank condition onto them during re-emission; that generated
++			# self-referential 'depends on !(PACKAGE_x<PACKAGE_self)||(arch)' lines.
++			if ($package{$depend}) {
++				my $pdeps = $package{$depend}->{depends};
++				my @arch_deps = grep { /^@/ } @$pdeps;
++				my @real_deps = grep { !/^@/ } @$pdeps;
++				push @t_depends, [ \@real_deps, $condition ] if @real_deps;
++				push @t_depends, [ \@arch_deps, undef ] if @arch_deps;
++			}
+ 
+ 			$m = "select";
+ 			next if $only_dep;
