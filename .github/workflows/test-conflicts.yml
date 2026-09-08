@@ -20,18 +20,30 @@ jobs:
           path: packages
           fetch-depth: 1
 
+      - name: Record exact tree fingerprints
+        run: |
+          echo "=== openwrt core ==="
+          git -C openwrt rev-parse HEAD
+          git -C openwrt log -1 --pretty=%s
+          echo "=== packages branch ==="
+          git -C packages rev-parse HEAD
+          git -C packages log -1 --pretty=%s
+
       - name: Apply generator fix if the branch carries the patch
         working-directory: openwrt
         run: |
-          PATCH="$GITHUB_WORKSPACE/.github/patches/pkgmeta-archfix.patch"
+          PATCH="$GITHUB_WORKSPACE/packages/.github/patches/pkgmeta-archfix.patch"
           if [ -f "$PATCH" ]; then
             git apply "$PATCH"
-            echo "RESULT: applied pkgmeta-archfix.patch"
+            grep -q arch_deps scripts/package-metadata.pl \
+              && echo "RESULT: applied pkgmeta-archfix.patch" \
+              || { echo "RESULT: APPLY VERIFY FAILED"; exit 1; }
+            sed -n '208,224p' scripts/package-metadata.pl
           else
             echo "RESULT: no fix patch (baseline)"
           fi
 
-      - name: Run make defconfig (full log)
+      - name: Run make defconfig and dump debug diagnostics
         working-directory: openwrt
         run: |
           sed -i '/^src-git\(-full\)\? packages/d' feeds.conf.default
@@ -42,14 +54,25 @@ jobs:
           echo "CONFIG_ALL=y" >> .config
           echo "CONFIG_TARGET_x86_64=y" >> .config
           make defconfig 2>&1 | tee /tmp/defconfig.log
-          echo "=== librespeed-common block ==="
-          grep -A 14 '^config PACKAGE_librespeed-common' tmp/.config-package.in || true
-          echo "=== librespeed-cli block ==="
-          grep -A 10 '^config PACKAGE_librespeed-cli$' tmp/.config-package.in || true
-          echo "=== librespeed-cli-rust block ==="
-          grep -A 10 '^config PACKAGE_librespeed-cli-rust' tmp/.config-package.in || true
-          if grep -q "recursive dependency" /tmp/defconfig.log; then
-            echo "RESULT: recursive dependency detected"
+
+          echo "=== all recursive-dependency blocks in defconfig.log ==="
+          grep -B 1 -A 8 'recursive dependency' /tmp/defconfig.log || true
+
+          echo "=== librespeed-common block in .config-package.in ==="
+          grep -A 16 $'^\tconfig PACKAGE_librespeed-common$' tmp/.config-package.in || echo "NO common block"
+          echo "=== librespeed-cli block in .config-package.in ==="
+          grep -A 12 $'^\tconfig PACKAGE_librespeed-cli$' tmp/.config-package.in || echo "NO cli block"
+          echo "=== librespeed-cli-rust block in .config-package.in ==="
+          grep -A 12 $'^\tconfig PACKAGE_librespeed-cli-rust$' tmp/.config-package.in || echo "NO rust block"
+
+          echo "=== scanned packageinfo for librespeed packages (generator input) ==="
+          grep -A 14 '^Package: librespeed' tmp/.packageinfo || echo "NO librespeed in packageinfo"
+
+          echo "=== file sizes ==="
+          wc -l tmp/.config-package.in tmp/.packageinfo
+
+          if grep -E "symbol PACKAGE_librespeed" /tmp/defconfig.log; then
+            echo "RESULT: librespeed recursion detected"
             exit 1
           fi
-          echo "RESULT: no recursion"
+          echo "RESULT: no librespeed recursion"
