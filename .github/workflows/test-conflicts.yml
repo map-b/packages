@@ -54,6 +54,9 @@ jobs:
           echo "MAKE_RC=$MAKE_RC" >> "$GITHUB_ENV"
           cp /tmp/defconfig.log ./defconfig-run.log || true
 
+          echo "=== full defconfig-run.log (last 200 lines) ==="
+          tail -n 200 /tmp/defconfig.log || true
+
           echo "=== recursion blocks: count + context ==="
           grep -c 'recursive dependency' /tmp/defconfig.log || true
           grep -B 1 -A 8 'recursive dependency' /tmp/defconfig.log || true
@@ -129,6 +132,7 @@ jobs:
         with:
           name: kconfig-debug-${{ github.sha }}
           retention-days: 14
+          include-hidden-files: true
           path: |
             openwrt/tmp/.config-package.in
             openwrt/tmp/.packageinfo
