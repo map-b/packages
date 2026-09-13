@@ -1,0 +1,136 @@
+name: Test Kconfig recursion detection
+
+on: [push]
+
+jobs:
+  test-kconfig:
+    name: Defconfig recursion check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout openwrt with PR #25091
+        uses: actions/checkout@v7
+        with:
+          repository: map-b/openwrt
+          ref: fix/package-metadata-arch-reemission
+          path: openwrt
+          fetch-depth: 1
+
+      - name: Checkout PR branch packages
+        uses: actions/checkout@v7
+        with:
+          path: packages
+          fetch-depth: 1
+
+      - name: Record exact tree fingerprints
+        run: |
+          echo "=== openwrt core (expect 760b2e7d39) ==="
+          git -C openwrt rev-parse HEAD
+          git -C openwrt log -1 --pretty=%s
+          echo "=== packages branch ==="
+          git -C packages rev-parse HEAD
+          git -C packages log -1 --pretty=%s
+
+      - name: Verify generator revision
+        working-directory: openwrt
+        run: |
+          grep -q 'my \$rank;' scripts/package-metadata.pl \
+            && grep -q 'my \$negation;' scripts/package-metadata.pl \
+            && echo "RESULT: refined-B present" \
+            || { echo "RESULT: VERIFY FAILED"; exit 1; }
+
+      - name: Run make defconfig and dump debug diagnostics
+        working-directory: openwrt
+        run: |
+          MAKE_RC=0
+          sed -i '/^src-git\(-full\)\? packages/d' feeds.conf.default
+          echo "src-link packages $GITHUB_WORKSPACE/packages" >> feeds.conf.default
+          ./scripts/feeds update -a
+          ./scripts/feeds install -f -a
+          rm -rf tmp/info tmp/.packageinfo tmp/.config-package.in
+          echo "CONFIG_ALL=y" >> .config
+          echo "CONFIG_TARGET_x86_64=y" >> .config
+          make defconfig > /tmp/defconfig.log 2>&1 || MAKE_RC=$?
+          echo "MAKE_RC=$MAKE_RC"
+          echo "MAKE_RC=$MAKE_RC" >> "$GITHUB_ENV"
+          cp /tmp/defconfig.log ./defconfig-run.log || true
+
+          echo "=== recursion blocks: count + context ==="
+          grep -c 'recursive dependency' /tmp/defconfig.log || true
+          grep -B 1 -A 8 'recursive dependency' /tmp/defconfig.log || true
+
+          echo "=== librespeed-common block in .config-package.in ==="
+          grep -A 16 $'^\tconfig PACKAGE_librespeed-common$' tmp/.config-package.in || echo "NO common block"
+          echo "=== librespeed-cli block in .config-package.in ==="
+          grep -A 12 $'^\tconfig PACKAGE_librespeed-cli$' tmp/.config-package.in || echo "NO cli block"
+          echo "=== librespeed-cli-rust block in .config-package.in ==="
+          grep -A 12 $'^\tconfig PACKAGE_librespeed-cli-rust$' tmp/.config-package.in || echo "NO rust block"
+
+          echo "=== unbound cache-domains blocks (#24341 class) ==="
+          for v in openssl mbedtls wolfssl; do
+            echo "--- cache-domains-$v:"
+            grep -A 14 $'^\tconfig PACKAGE_cache-domains-'$v'$' tmp/.config-package.in || echo "NO block"
+          done
+
+          echo "=== mini_snmpd block (unreported +procd case) ==="
+          grep -A 12 $'^\tconfig PACKAGE_mini_snmpd$' tmp/.config-package.in || echo "NO mini_snmpd block"
+
+          echo "=== scanned packageinfo for librespeed packages (generator input) ==="
+          grep -A 14 '^Package: librespeed' tmp/.packageinfo || echo "NO librespeed in packageinfo"
+
+          echo "=== file sizes ==="
+          wc -l tmp/.config-package.in tmp/.packageinfo
+          du -sh tmp/.config-package.in
+
+          echo "=== tree cleanliness ==="
+          git status --short | head -5 || true
+
+      - name: Assert no self-rank in watched stanzas
+        working-directory: openwrt
+        run: |
+          fail=0
+          if [ "${MAKE_RC:-1}" != "0" ]; then
+            echo "FAIL: make defconfig exited $MAKE_RC"; fail=1
+          fi
+          check_stanza() {
+            body=$(awk -v pkg="$1" 'BEGIN{f=0} $0=="\tconfig PACKAGE_"pkg{f=1;next} /^\tmenuconfig |^menu |^endmenu/{f=0} f' tmp/.config-package.in)
+            if [ -z "$body" ]; then echo "SKIP: no PACKAGE_$1 block"; return 0; fi
+            if echo "$body" | grep -E '^[[:space:]]+depends on' | grep -q "<PACKAGE_$1"; then
+              echo "FAIL: self-rank in depends-on of PACKAGE_$1"; fail=1
+            else
+              echo "OK: no self-rank in depends-on of PACKAGE_$1"
+            fi
+          }
+          # librespeed-common must exist (motivating case); rest tolerate absence
+          if ! grep -q $'^\tconfig PACKAGE_librespeed-common$' tmp/.config-package.in; then
+            echo "FAIL: no librespeed-common block at all"; fail=1
+          fi
+          for p in librespeed-common librespeed-cli cache-domains-openssl cache-domains-mbedtls cache-domains-wolfssl mini_snmpd; do
+            check_stanza "$p"
+          done
+          # anti-overstrip: negation-carrying gates must exist (bare-only output would be the old bug)
+          grep -E '^[[:space:]]+depends on !\([^)]*!PACKAGE_' tmp/.config-package.in \
+            && echo "OK: negation-carrying gates present" \
+            || { echo "FAIL: no negation-carrying gates"; fail=1; }
+          # arbitration intact: rank must survive on select lines
+          grep -E '^[[:space:]]+select .* if .*<PACKAGE_' tmp/.config-package.in \
+            && echo "OK: rank preserved on selects" \
+            || { echo "FAIL: no rank on selects"; fail=1; }
+          # any recursion at all fails the job (this workflow's purpose)
+          if grep -E 'recursive dependency' /tmp/defconfig.log; then
+            echo "FAIL: recursion present in tree"; fail=1
+          else
+            echo "OK: no recursion anywhere"
+          fi
+          exit $fail
+
+      - name: Upload debug artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kconfig-debug-${{ github.sha }}
+          retention-days: 14
+          path: |
+            openwrt/tmp/.config-package.in
+            openwrt/tmp/.packageinfo
+            openwrt/.config
+            openwrt/defconfig-run.log
